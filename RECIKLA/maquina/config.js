@@ -5,7 +5,7 @@
 window.RECIKLA_CONFIG = {
 
   // 1) Supabase → Project Settings → Data API → Project URL
-  SUPABASE_URL: 'https://hepmxhsayblvownlllrt.supabase.co/rest/v1/',
+  SUPABASE_URL: 'https://hepmxhsayblvownlllrt.supabase.co',
 
   // 2) Supabase → Project Settings → API Keys → anon / public
   //    (esta clave es pública, es seguro dejarla aquí: las tablas están protegidas con RLS)
