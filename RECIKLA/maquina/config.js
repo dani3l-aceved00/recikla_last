@@ -13,7 +13,7 @@ window.RECIKLA_CONFIG = {
 
   // 3) URL donde desplegaste la app móvil (sin barra al final).
   //    Es lo que se codifica dentro del QR de la pantalla de bienvenida.
-  URL_APP_MOVIL: 'https://recikla-movil.vercel.app',
+  URL_APP_MOVIL: 'https://recikla-movil.vercel.app/',
 
   // 4) Qué máquina es esta. Debe existir en la tabla "maquinas".
   CODIGO_MAQUINA: 'M-001',
