@@ -5,11 +5,11 @@
 window.RECIKLA_CONFIG = {
 
   // 1) Supabase → Project Settings → Data API → Project URL
-  SUPABASE_URL: 'https://TU-PROYECTO.supabase.co',
+  SUPABASE_URL: 'https://hepmxhsayblvownlllrt.supabase.co/rest/v1/',
 
   // 2) Supabase → Project Settings → API Keys → anon / public
   //    (esta clave es pública, es seguro dejarla aquí: las tablas están protegidas con RLS)
-  SUPABASE_ANON_KEY: 'PEGA-AQUI-TU-ANON-KEY',
+  SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlcG14aHNheWJsdm93bmxsbHJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwOTQyOTQsImV4cCI6MjEwNDY3MDI5NH0.WQwXhnOluIM071pH9fM8ZxCSs8O3cVc9l_76b594jxg',
 
   // 3) URL donde desplegaste la app móvil (sin barra al final).
   //    Es lo que se codifica dentro del QR de la pantalla de bienvenida.
