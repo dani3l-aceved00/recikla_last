@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RECIKLA — Máquina Inteligente de Reciclaje</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♻️</text></svg>">
+<style>
+  :root{
+    --bg:#07130d; --bg2:#0c1f16; --panel:#0f2419; --line:#1d4432;
+    --green:#22e07a; --green-soft:#0e7a45; --amber:#ffc043; --red:#ff4d5e;
+    --text:#eaf7ef; --muted:#8fb8a2;
+    --font:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden}
+
+  .app{display:flex;height:100vh;width:100vw}
+  .side{width:50%;height:100%;position:relative}
+  .left{background:radial-gradient(circle at 30% 20%, #123524 0%, var(--bg) 60%);
+        display:flex;flex-direction:column;border-right:1px solid var(--line);overflow:hidden}
+  .right{background:#000;display:flex;flex-direction:column}
+
+  .topbar{display:flex;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid var(--line);flex-shrink:0}
+  .logo{display:flex;align-items:center;gap:10px}
+  .logo-mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--green),#0b9d54);
+             display:grid;place-items:center;font-size:20px;box-shadow:0 0 22px rgba(34,224,122,.35)}
+  .logo-text{font-size:22px;font-weight:800;letter-spacing:2px}
+  .logo-text span{color:var(--green)}
+  .meta{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .badge{font-size:11px;letter-spacing:1.3px;color:var(--muted);border:1px solid var(--line);
+         padding:5px 10px;border-radius:20px;text-transform:uppercase;white-space:nowrap}
+  .badge b{color:var(--green)}
+  .badge.off b{color:var(--amber)}
+
+  .content{flex:1;overflow-y:auto;padding:24px}
+  .screen{display:none;height:100%}
+  .screen.active{display:flex;flex-direction:column}
+
+  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px}
+  .hero h1{font-size:clamp(24px,2.6vw,38px);font-weight:800;line-height:1.15}
+  .hero h1 em{font-style:normal;color:var(--green)}
+  .hero p{color:var(--muted);font-size:15px;max-width:400px;line-height:1.5}
+
+  .qr-wrap{margin:20px 0 8px;padding:14px;border-radius:18px;background:#fff;
+           animation:pulse 2.4s infinite;display:grid;place-items:center;min-width:160px;min-height:160px}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(34,224,122,.45)}70%{box-shadow:0 0 0 18px rgba(34,224,122,0)}100%{box-shadow:0 0 0 0 rgba(34,224,122,0)}}
+  #qrbox img,#qrbox canvas{display:block;width:150px;height:150px}
+  .qr-hint{font-size:12px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+  .qr-timer{font-size:11px;color:var(--muted);margin-top:4px}
+  .sep{display:flex;align-items:center;gap:12px;width:260px;margin:18px 0 4px;color:var(--muted);font-size:12px}
+  .sep::before,.sep::after{content:'';flex:1;height:1px;background:var(--line)}
+
+  .form{width:100%;max-width:400px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+  .field label{display:block;font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+  .field input{width:100%;padding:14px 16px;border-radius:12px;border:1px solid var(--line);
+               background:var(--panel);color:var(--text);font-size:22px;letter-spacing:2px;text-align:center;
+               font-family:var(--font);outline:none}
+  .field input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(34,224,122,.15)}
+  .error{color:var(--red);font-size:13px;min-height:18px;text-align:center}
+
+  .keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;max-width:300px;margin:0 auto;width:100%}
+  .key{padding:16px 0;border-radius:12px;border:1px solid var(--line);background:var(--panel);
+       color:var(--text);font-size:20px;font-weight:700;cursor:pointer;font-family:var(--font)}
+  .key:hover{border-color:var(--green)}
+  .key.alt{color:var(--amber);font-size:15px}
+
+  .btn{padding:15px 22px;border:none;border-radius:12px;cursor:pointer;font-family:var(--font);
+       font-size:15px;font-weight:700;letter-spacing:.6px;
+       background:linear-gradient(135deg,var(--green),#0fa85c);color:#05200f;transition:filter .15s,transform .1s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:active{transform:translateY(1px)}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .btn.danger{background:linear-gradient(135deg,#ff6b7a,#e02440);color:#fff}
+  .btn.wide{width:100%}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+
+  .found{background:var(--panel);border:1px solid var(--green-soft);border-radius:16px;padding:20px;text-align:center;width:100%;max-width:400px;margin:0 auto}
+  .found .av{width:56px;height:56px;border-radius:50%;background:rgba(34,224,122,.15);color:var(--green);
+             display:grid;place-items:center;font-size:24px;margin:0 auto 10px}
+  .found .nm{font-size:20px;font-weight:800}
+  .found .us{color:var(--muted);font-size:13px;margin-top:2px}
+  .found .pt{margin-top:10px;font-size:13px;color:var(--muted)}
+  .found .pt b{color:var(--green);font-size:18px}
+
+  .sess-head{margin-bottom:14px}
+  .sess-head h2{font-size:clamp(20px,2.1vw,30px);font-weight:800;color:var(--green);letter-spacing:.5px}
+  .sess-head p{color:var(--muted);font-size:14px;margin-top:4px}
+  .user-chip{display:inline-flex;align-items:center;gap:9px;margin-bottom:14px;background:var(--panel);
+             border:1px solid var(--line);padding:8px 14px;border-radius:999px;font-size:13px}
+  .user-chip b{color:var(--green)}
+
+  .status-box{border-radius:16px;padding:18px;text-align:center;border:2px solid var(--line);
+              background:var(--panel);transition:all .2s;margin-bottom:14px}
+  .status-box .lbl{font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase}
+  .status-box .val{font-size:clamp(26px,3.4vw,44px);font-weight:900;letter-spacing:2px;margin-top:2px}
+  .status-box .sub{font-size:13px;color:var(--muted);margin-top:4px;min-height:18px}
+  .st-wait{border-color:#3a4b42}.st-wait .val{color:#9fb6a8}
+  .st-ok{border-color:var(--green);background:rgba(34,224,122,.10)}.st-ok .val{color:var(--green)}
+  .st-bad{border-color:var(--red);background:rgba(255,77,94,.10)}.st-bad .val{color:var(--red)}
+
+  .capacity{margin-bottom:14px}
+  .capacity .row{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);
+                 text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
+  .capacity .row b{color:var(--text)}
+  .bar{height:10px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+  .bar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--green),#0fa85c);transition:width .35s}
+  .bar i.full{background:linear-gradient(90deg,var(--amber),var(--red))}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:11px 6px;text-align:center}
+  .stat .n{font-size:23px;font-weight:800}
+  .stat .t{font-size:10px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-top:2px}
+  .stat.total{background:linear-gradient(135deg,rgba(34,224,122,.16),rgba(34,224,122,.04));border-color:var(--green-soft)}
+  .stat.total .n{color:var(--green)}
+
+  .money{display:flex;align-items:baseline;justify-content:space-between;background:var(--panel);
+         border:1px solid var(--green-soft);border-radius:13px;padding:13px 18px;margin-bottom:14px}
+  .money .t{font-size:12px;letter-spacing:1.4px;color:var(--muted);text-transform:uppercase}
+  .money .n{font-size:27px;font-weight:900;color:var(--green)}
+
+  .log{flex:1;min-height:60px;overflow-y:auto;border:1px solid var(--line);border-radius:13px;
+       background:rgba(0,0,0,.25);padding:8px;margin-bottom:12px}
+  .log-empty{color:var(--muted);font-size:13px;text-align:center;padding:14px}
+  .log-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;font-size:13px;animation:slide .25s ease}
+  .log-item + .log-item{margin-top:4px}
+  @keyframes slide{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+  .log-item .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:13px;flex-shrink:0}
+  .log-item .nm{font-weight:700;letter-spacing:.5px}
+  .log-item .pz{margin-left:auto;color:var(--green);font-weight:700}
+  .ic-plastico{background:rgba(56,182,255,.18);color:#38b6ff}
+  .ic-vidrio{background:rgba(34,224,122,.18);color:var(--green)}
+  .ic-lata{background:rgba(255,192,67,.18);color:var(--amber)}
+
+  .receipt{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px;max-width:430px;margin:0 auto;width:100%}
+  .receipt h2{text-align:center;font-size:22px;color:var(--green);letter-spacing:1px}
+  .receipt .sub{text-align:center;color:var(--muted);font-size:13px;margin-top:4px;margin-bottom:16px}
+  .rrow{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--line);font-size:14px}
+  .rrow span:first-child{color:var(--muted)}
+  .rtotal{display:flex;justify-content:space-between;align-items:baseline;margin-top:14px;padding-top:12px;border-top:2px solid var(--green-soft)}
+  .rtotal span{font-size:13px;letter-spacing:1.4px;color:var(--muted);text-transform:uppercase}
+  .rtotal b{font-size:30px;color:var(--green)}
+  .countdown{text-align:center;color:var(--muted);font-size:12px;margin-top:14px}
+
+  .cam-head{display:flex;align-items:center;gap:10px;padding:13px 22px;border-bottom:1px solid var(--line);background:var(--bg2);flex-shrink:0}
+  .cam-head .t{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);animation:blink 1.3s infinite}
+  @keyframes blink{50%{opacity:.25}}
+  .cam-model{margin-left:auto;font-size:11px;color:var(--muted)}
+
+  .stage{flex:1;position:relative;overflow:hidden;background:#000;display:grid;place-items:center}
+  .mirror{position:absolute;inset:0}
+  #video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  #video{transform:scaleX(-1)}
+  #overlay{pointer-events:none}
+
+  .cam-status{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:12px;
+              padding:12px 26px;border-radius:999px;backdrop-filter:blur(10px);background:rgba(0,0,0,.62);
+              border:2px solid #3a4b42;font-size:clamp(18px,2.2vw,30px);font-weight:900;letter-spacing:3px;
+              white-space:nowrap;transition:all .18s}
+  .cam-status.st-ok{border-color:var(--green);color:var(--green);box-shadow:0 0 28px rgba(34,224,122,.35)}
+  .cam-status.st-bad{border-color:var(--red);color:var(--red);box-shadow:0 0 28px rgba(255,77,94,.3)}
+  .cam-status.st-wait{border-color:#3a4b42;color:#a9c2b5}
+  .cam-status small{font-size:12px;letter-spacing:1px;font-weight:600;opacity:.75}
+
+  .loader{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.85);z-index:5;text-align:center;padding:30px}
+  .loader.hidden{display:none}
+  .spinner{width:44px;height:44px;border-radius:50%;margin:0 auto 16px;border:3px solid rgba(34,224,122,.2);
+           border-top-color:var(--green);animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .loader p{color:var(--muted);font-size:14px;line-height:1.6;max-width:340px}
+  .loader b{color:var(--green);display:block;margin-bottom:6px;font-size:16px}
+
+  .motor{position:absolute;left:0;right:0;bottom:0;height:0;background:linear-gradient(0deg,rgba(34,224,122,.55),transparent);
+         transition:height .45s ease;pointer-events:none}
+  .motor.on{height:100%}
+
+  .toast{position:fixed;left:50%;top:22px;transform:translateX(-50%) translateY(-140%);z-index:99;
+         background:var(--panel);border:1px solid var(--green-soft);color:var(--text);padding:12px 20px;
+         border-radius:12px;font-size:14px;transition:transform .3s;max-width:80vw;text-align:center}
+  .toast.show{transform:translateX(-50%) translateY(0)}
+  .toast.bad{border-color:var(--red)}
+
+  @media (max-width:900px){
+    body{overflow:auto}
+    .app{flex-direction:column;height:auto}
+    .side{width:100%;height:auto}
+    .left{border-right:none;border-bottom:1px solid var(--line)}
+    .stage{height:56vw;min-height:280px}
+    .content{padding:18px}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== IZQUIERDA ===================== -->
+  <section class="side left">
+    <div class="topbar">
+      <div class="logo">
+        <div class="logo-mark">♻️</div>
+        <div class="logo-text">RECI<span>KLA</span></div>
+      </div>
+      <div class="meta">
+        <div class="badge" id="badgeMaquina">Máquina <b>M-001</b></div>
+        <div class="badge" id="badgeLlenado">Llenado <b>—</b></div>
+        <div class="badge off" id="badgeConn">Conexión <b>…</b></div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- 1. BIENVENIDA -->
+      <div class="screen active" id="screenHome">
+        <div class="hero">
+          <h1>Bienvenido a <em>RECIKLA</em></h1>
+          <p>Escanea para reciclar. Convierte tus botellas y latas en puntos al instante.</p>
+          <div class="qr-wrap"><div id="qrbox"></div></div>
+          <div class="qr-hint">Escanea el código desde la app RECIKLA</div>
+          <div class="qr-timer" id="qrTimer">&nbsp;</div>
+          <div class="sep">o</div>
+          <button class="btn" id="goPhone">Ingresar con número de teléfono</button>
+        </div>
+      </div>
+
+      <!-- 2. INGRESO POR TELÉFONO -->
+      <div class="screen" id="screenPhone">
+        <div class="hero" style="justify-content:center;gap:14px">
+          <h1 style="font-size:24px">Ingresa tu número de teléfono</h1>
+          <div class="form">
+            <div class="field">
+              <input id="inPhone" type="text" inputmode="numeric" readonly placeholder="300 000 0000" maxlength="14">
+            </div>
+            <div class="keypad" id="keypad"></div>
+            <div class="error" id="phoneError"></div>
+            <button class="btn wide" id="searchPhone">Buscar mi cuenta</button>
+            <button class="btn ghost wide" id="backHome1">Volver</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. USUARIO ENCONTRADO -->
+      <div class="screen" id="screenFound">
+        <div class="hero" style="justify-content:center;gap:16px">
+          <div class="found">
+            <div class="av">👤</div>
+            <div class="nm" id="foundName">—</div>
+            <div class="us" id="foundUser">—</div>
+            <div class="pt">Balance actual: <b id="foundPoints">0</b> puntos</div>
+          </div>
+          <div class="form">
+            <button class="btn wide" id="continueSession">CONTINUAR</button>
+            <button class="btn ghost wide" id="backHome2">No soy yo</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. RECICLANDO -->
+      <div class="screen" id="screenSession">
+        <div class="user-chip">👤 <b id="chipName">—</b> · <span id="chipUser">—</span></div>
+        <div class="sess-head">
+          <h2>EMPIEZA A RECICLAR</h2>
+          <p>Ingresa todas tus botellas o latas <b>una por una</b> frente a la cámara.</p>
+        </div>
+
+        <div class="status-box st-wait" id="statusBox">
+          <div class="lbl">Estado de la cámara</div>
+          <div class="val" id="statusVal">ESPERANDO</div>
+          <div class="sub" id="statusSub">Acerca un objeto al lector</div>
+        </div>
+
+        <div class="capacity">
+          <div class="row"><span>Envases de esta sesión</span><b><span id="capNow">0</span> / <span id="capMax">20</span></b></div>
+          <div class="bar"><i id="capBar"></i></div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="n" id="cPlastico">0</div><div class="t">Plástico</div></div>
+          <div class="stat"><div class="n" id="cVidrio">0</div><div class="t">Vidrio</div></div>
+          <div class="stat"><div class="n" id="cLata">0</div><div class="t">Latas</div></div>
+          <div class="stat total"><div class="n" id="cTotal">0</div><div class="t">Total</div></div>
+        </div>
+
+        <div class="money">
+          <div class="t">Puntos de esta sesión</div>
+          <div class="n" id="moneyVal">0</div>
+        </div>
+
+        <div class="log" id="logBox">
+          <div class="log-empty" id="logEmpty">Aún no has ingresado objetos en esta sesión.</div>
+        </div>
+
+        <button class="btn danger wide" id="finishBtn">FINALIZAR</button>
+      </div>
+
+      <!-- 5. RESUMEN -->
+      <div class="screen" id="screenSummary">
+        <div class="hero" style="justify-content:center">
+          <div class="receipt">
+            <h2>¡GRACIAS POR RECICLAR!</h2>
+            <div class="sub" id="sumDate">—</div>
+            <div class="rrow"><span>Usuario</span><b id="sumName">—</b></div>
+            <div class="rrow"><span>Cuenta</span><b id="sumUser">—</b></div>
+            <div class="rrow"><span>Botellas plásticas</span><b id="sumPlastico">0</b></div>
+            <div class="rrow"><span>Botellas de vidrio</span><b id="sumVidrio">0</b></div>
+            <div class="rrow"><span>Latas</span><b id="sumLata">0</b></div>
+            <div class="rrow"><span>Objetos ingresados</span><b id="sumTotal">0</b></div>
+            <div class="rrow"><span>Puntos ganados</span><b id="sumGain">0</b></div>
+            <div class="rtotal"><span>Balance en tu cuenta</span><b id="sumBalance">0</b></div>
+            <div class="countdown" id="countdown">Volviendo al inicio…</div>
+            <button class="btn wide" style="margin-top:12px" id="newSession">Volver al inicio ahora</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ===================== DERECHA: CÁMARA ===================== -->
+  <section class="side right">
+    <div class="cam-head">
+      <div class="dot"></div>
+      <div class="t">Lector óptico en vivo</div>
+      <div class="cam-model" id="camModel">Iniciando…</div>
+    </div>
+    <div class="stage" id="stage">
+      <div class="mirror">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="motor" id="motor"></div>
+      <div class="cam-status st-wait" id="camStatus">ESPERANDO <small id="camSub"></small></div>
+      <div class="loader" id="loader">
+        <div>
+          <div class="spinner"></div>
+          <p><b>Preparando el lector…</b>Cargando modelos de visión artificial y solicitando acceso a tu cámara.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

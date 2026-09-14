@@ -1,0 +1,17 @@
+{
+  "name": "RECIKLA",
+  "short_name": "RECIKLA",
+  "description": "Recicla tus envases, suma puntos y conviértelos en dinero.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#07130d",
+  "theme_color": "#07130d",
+  "lang": "es-CO",
+  "icons": [
+    { "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/icono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/icono-mask-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>RECIKLA</title>
+<meta name="theme-color" content="#07130d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="iconos/icono-192.png">
+<link rel="icon" href="iconos/icono-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --bg:#07130d; --bg2:#0c1f16; --panel:#0f2419; --panel2:#132d20; --line:#1d4432;
+    --green:#22e07a; --green-soft:#0e7a45; --amber:#ffc043; --red:#ff4d5e; --blue:#38b6ff;
+    --text:#eaf7ef; --muted:#8fb8a2;
+    --font:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    --nav:72px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);overscroll-behavior-y:none}
+  .shell{max-width:480px;margin:0 auto;min-height:100%;position:relative;
+         background:radial-gradient(circle at 50% 0%, #10301f 0%, var(--bg) 55%);
+         padding-bottom:calc(var(--nav) + env(safe-area-inset-bottom));}
+
+  /* ---------- comunes ---------- */
+  .view{display:none;padding:18px 16px}
+  .view.active{display:block;animation:fade .2s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h1{font-size:24px;font-weight:800}
+  h2{font-size:18px;font-weight:800;margin-bottom:10px}
+  .muted{color:var(--muted);font-size:13px;line-height:1.5}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
+  .card + .card{margin-top:12px}
+  .row{display:flex;align-items:center;gap:12px}
+  .grow{flex:1;min-width:0}
+  .btn{width:100%;padding:15px;border:none;border-radius:13px;cursor:pointer;font-family:var(--font);
+       font-size:15px;font-weight:700;background:linear-gradient(135deg,var(--green),#0fa85c);color:#05200f}
+  .btn:active{transform:translateY(1px)}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .btn.sm{padding:11px;font-size:13px}
+  .btn[disabled]{opacity:.45}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+  .field input,.field select{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
+       background:var(--panel2);color:var(--text);font-size:16px;font-family:var(--font);outline:none}
+  .field input:focus{border-color:var(--green)}
+  .msg{font-size:13px;min-height:18px;margin:6px 0;line-height:1.4}
+  .msg.err{color:var(--red)} .msg.ok{color:var(--green)}
+  .pill{display:inline-block;font-size:11px;padding:4px 9px;border-radius:99px;background:var(--panel2);
+        border:1px solid var(--line);color:var(--muted)}
+
+  /* ---------- header ---------- */
+  .top{display:flex;align-items:center;gap:10px;padding:16px 16px 6px}
+  .logo-mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--green),#0b9d54);
+             display:grid;place-items:center;font-size:18px}
+  .logo-text{font-size:19px;font-weight:800;letter-spacing:1.6px}
+  .logo-text span{color:var(--green)}
+  .top .who{margin-left:auto;text-align:right;font-size:12px;color:var(--muted);line-height:1.3}
+  .top .who b{color:var(--text);display:block;font-size:13px}
+
+  /* ---------- balance ---------- */
+  .balance{background:linear-gradient(135deg,rgba(34,224,122,.20),rgba(34,224,122,.04));
+           border:1px solid var(--green-soft);border-radius:20px;padding:20px;text-align:center}
+  .balance .t{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+  .balance .n{font-size:44px;font-weight:900;color:var(--green);line-height:1.1;margin:4px 0}
+  .balance .eq{font-size:13px;color:var(--muted)}
+
+  .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}
+  .quick button{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 4px;
+                color:var(--text);font-family:var(--font);font-size:10.5px;cursor:pointer;display:grid;gap:5px;justify-items:center}
+  .quick button .ic{font-size:19px}
+  .quick button:active{border-color:var(--green)}
+
+  /* ---------- máquinas ---------- */
+  .maq{display:flex;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid var(--line)}
+  .maq:last-child{border-bottom:none}
+  .maq .ring{width:46px;height:46px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;
+             font-size:11px;font-weight:800;background:conic-gradient(var(--green) 0deg, rgba(255,255,255,.08) 0deg)}
+  .maq .ring i{width:36px;height:36px;border-radius:50%;background:var(--panel);display:grid;place-items:center;font-style:normal}
+  .maq .nm{font-size:14px;font-weight:700;line-height:1.25}
+  .maq .ad{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .maq .st{font-size:10px;margin-top:4px}
+  .st-ok{color:var(--green)} .st-med{color:var(--amber)} .st-full{color:var(--red)}
+
+  #mapa{height:230px;border-radius:16px;overflow:hidden;border:1px solid var(--line);margin-bottom:12px;background:var(--panel2)}
+  .leaflet-container{background:#0b1a12}
+  .mk{width:26px;height:26px;border-radius:50%;border:2px solid #fff;display:grid;place-items:center;
+      font-size:10px;font-weight:800;color:#05200f;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+
+  /* ---------- escáner ---------- */
+  .scan-wrap{position:relative;border-radius:18px;overflow:hidden;background:#000;aspect-ratio:3/4;margin-bottom:12px}
+  #scanVideo{width:100%;height:100%;object-fit:cover}
+  .scan-frame{position:absolute;inset:18%;border:3px solid var(--green);border-radius:16px;
+              box-shadow:0 0 0 999px rgba(0,0,0,.45)}
+  .scan-hint{position:absolute;left:0;right:0;bottom:14px;text-align:center;font-size:12px;color:#fff;
+             text-shadow:0 1px 6px #000}
+
+  /* ---------- listas / historial ---------- */
+  .item{display:flex;align-items:center;gap:11px;padding:11px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .item:last-child{border-bottom:none}
+  .item .ic{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;background:var(--panel2)}
+  .item .pz{margin-left:auto;font-weight:700;color:var(--green);white-space:nowrap}
+  .item .pz.neg{color:var(--amber)}
+
+  /* ---------- nav inferior ---------- */
+  .nav{position:fixed;left:0;right:0;bottom:0;z-index:40;background:rgba(9,26,18,.96);
+       border-top:1px solid var(--line);backdrop-filter:blur(12px);
+       padding-bottom:env(safe-area-inset-bottom)}
+  .nav-in{max-width:480px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr);height:var(--nav)}
+  .nav button{background:none;border:none;color:var(--muted);font-family:var(--font);font-size:10px;
+              display:grid;gap:3px;justify-items:center;align-content:center;cursor:pointer}
+  .nav button .ic{font-size:19px}
+  .nav button.on{color:var(--green)}
+  .nav .fab .ic{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--green),#0fa85c);
+                color:#05200f;display:grid;place-items:center;font-size:21px;margin-top:-16px;
+                box-shadow:0 6px 18px rgba(34,224,122,.4)}
+
+  /* ---------- auth ---------- */
+  .auth{padding:26px 20px;min-height:100vh;display:flex;flex-direction:column;justify-content:center}
+  .auth .brand{text-align:center;margin-bottom:22px}
+  .auth .brand .m{width:64px;height:64px;border-radius:20px;margin:0 auto 12px;
+                  background:linear-gradient(135deg,var(--green),#0b9d54);display:grid;place-items:center;font-size:32px;
+                  box-shadow:0 0 34px rgba(34,224,122,.35)}
+  .auth .brand h1{font-size:30px;letter-spacing:2px}
+  .auth .brand h1 span{color:var(--green)}
+  .auth .brand p{color:var(--muted);font-size:13px;margin-top:4px}
+  .tabs{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:4px;margin-bottom:16px}
+  .tabs button{flex:1;padding:10px;border:none;border-radius:10px;background:none;color:var(--muted);
+               font-family:var(--font);font-size:14px;font-weight:700;cursor:pointer}
+  .tabs button.on{background:var(--green);color:#05200f}
+
+  /* ---------- modal ---------- */
+  .modal{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.7);display:none;align-items:flex-end}
+  .modal.show{display:flex}
+  .sheet{background:var(--bg2);border-top:1px solid var(--line);border-radius:22px 22px 0 0;
+         width:100%;max-width:480px;margin:0 auto;padding:20px 18px calc(24px + env(safe-area-inset-bottom));
+         max-height:86vh;overflow-y:auto;animation:up .25s ease}
+  @keyframes up{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}
+  .sheet .bar{width:40px;height:4px;border-radius:99px;background:var(--line);margin:0 auto 14px}
+  .step{display:flex;gap:12px;margin-bottom:14px}
+  .step .n{width:26px;height:26px;border-radius:50%;background:var(--green);color:#05200f;
+           display:grid;place-items:center;font-weight:800;font-size:13px;flex-shrink:0}
+  .step p{font-size:13px;color:var(--muted);line-height:1.5}
+  .step p b{color:var(--text)}
+
+  .toast{position:fixed;left:50%;top:18px;transform:translateX(-50%) translateY(-160%);z-index:99;
+         background:var(--panel);border:1px solid var(--green-soft);padding:12px 18px;border-radius:13px;
+         font-size:13.5px;transition:transform .3s;max-width:88vw;text-align:center;line-height:1.4}
+  .toast.show{transform:translateX(-50%) translateY(0)}
+  .toast.bad{border-color:var(--red)}
+
+  .splash{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;z-index:200}
+  .splash.hide{display:none}
+  .spin{width:40px;height:40px;border-radius:50%;border:3px solid rgba(34,224,122,.2);
+        border-top-color:var(--green);animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div class="splash" id="splash"><div class="spin"></div></div>
+
+<div class="shell">
+
+  <!-- ================= AUTENTICACIÓN ================= -->
+  <div class="view" id="viewAuth">
+    <div class="auth">
+      <div class="brand">
+        <div class="m">♻️</div>
+        <h1>RECI<span>KLA</span></h1>
+        <p>Recicla, suma puntos y conviértelos en dinero</p>
+      </div>
+
+      <div class="tabs">
+        <button id="tabLogin" class="on">Iniciar sesión</button>
+        <button id="tabReg">Crear cuenta</button>
+      </div>
+
+      <!-- login -->
+      <div id="formLogin">
+        <div class="field"><label>Correo electrónico</label>
+          <input id="lgCorreo" type="email" autocomplete="email" placeholder="tucorreo@mail.com"></div>
+        <div class="field"><label>Contraseña</label>
+          <input id="lgClave" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+        <div class="msg err" id="lgMsg"></div>
+        <button class="btn" id="btnLogin">Entrar</button>
+      </div>
+
+      <!-- registro -->
+      <div id="formReg" style="display:none">
+        <div class="field"><label>Nombre completo</label>
+          <input id="rgNombre" type="text" placeholder="Karol Ramírez"></div>
+        <div class="field"><label>Nombre de usuario</label>
+          <input id="rgUsuario" type="text" placeholder="karolr" autocapitalize="none"></div>
+        <div class="field"><label>Número de teléfono</label>
+          <input id="rgTel" type="tel" inputmode="numeric" placeholder="3001234567" maxlength="10"></div>
+        <div class="field"><label>Correo electrónico</label>
+          <input id="rgCorreo" type="email" placeholder="tucorreo@mail.com"></div>
+        <div class="field"><label>Fecha de nacimiento</label>
+          <input id="rgNac" type="date"></div>
+        <div class="field"><label>Contraseña (mínimo 6 caracteres)</label>
+          <input id="rgClave" type="password" placeholder="••••••••"></div>
+        <div class="msg err" id="rgMsg"></div>
+        <button class="btn" id="btnReg">Crear mi cuenta</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= INICIO ================= -->
+  <div class="view" id="viewHome">
+    <div class="top" style="padding-left:0;padding-right:0">
+      <div class="logo-mark">♻️</div>
+      <div class="logo-text">RECI<span>KLA</span></div>
+      <div class="who"><b id="hiName">—</b><span id="hiUser">—</span></div>
+    </div>
+
+    <div class="balance">
+      <div class="t">Tu balance</div>
+      <div class="n" id="balPuntos">0</div>
+      <div class="eq" id="balPesos">≈ $0 COP</div>
+    </div>
+
+    <div class="quick">
+      <button data-go="viewEscanear"><span class="ic">📷</span>Escanear</button>
+      <button data-go="viewMaquinas"><span class="ic">📍</span>Máquinas</button>
+      <button data-go="viewCanjear"><span class="ic">💸</span>Canjear</button>
+      <button id="qInstr"><span class="ic">💡</span>Cómo usar</button>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="row" style="margin-bottom:6px">
+        <h2 style="margin:0">Máquinas cerca de ti</h2>
+        <button class="pill" style="margin-left:auto;cursor:pointer" data-go="viewMaquinas">Ver todas</button>
+      </div>
+      <div id="homeMaquinas"><div class="muted">Cargando…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Actividad reciente</h2>
+      <div id="homeActividad"><div class="muted">Aún no tienes movimientos. ¡Recicla en una máquina para empezar!</div></div>
+    </div>
+
+    <div class="card">
+      <h2>¿Necesitas ayuda?</h2>
+      <div class="row" style="gap:9px">
+        <button class="btn ghost sm" id="qSoporte">Soporte</button>
+        <button class="btn ghost sm" id="qInstr2">Instrucciones</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MÁQUINAS ================= -->
+  <div class="view" id="viewMaquinas">
+    <h1 style="margin-bottom:4px">Máquinas</h1>
+    <p class="muted" style="margin-bottom:14px">Nivel de llenado en tiempo real. Evita las que están casi llenas.</p>
+    <div id="mapa"></div>
+    <div class="card"><div id="listaMaquinas"><div class="muted">Cargando…</div></div></div>
+  </div>
+
+  <!-- ================= ESCANEAR ================= -->
+  <div class="view" id="viewEscanear">
+    <h1 style="margin-bottom:4px">Escanear máquina</h1>
+    <p class="muted" style="margin-bottom:14px">Apunta al código QR que aparece en la pantalla de la máquina RECIKLA.</p>
+    <div class="scan-wrap">
+      <video id="scanVideo" playsinline muted></video>
+      <div class="scan-frame"></div>
+      <div class="scan-hint" id="scanHint">Buscando código…</div>
+    </div>
+    <div class="msg" id="scanMsg"></div>
+    <button class="btn ghost" id="scanManual">Ingresar el código a mano</button>
+  </div>
+
+  <!-- ================= CANJEAR ================= -->
+  <div class="view" id="viewCanjear">
+    <h1 style="margin-bottom:4px">Canjear puntos</h1>
+    <p class="muted" style="margin-bottom:14px">1 punto = $1 COP. Mínimo <b id="minCanje">2.000</b> puntos por solicitud.</p>
+
+    <div class="balance" style="margin-bottom:14px">
+      <div class="t">Disponible</div>
+      <div class="n" id="cjBalance">0</div>
+    </div>
+
+    <div class="card">
+      <div class="field"><label>¿Cuántos puntos quieres canjear?</label>
+        <input id="cjPuntos" type="number" inputmode="numeric" placeholder="2000"></div>
+      <div class="field"><label>Método</label>
+        <select id="cjMetodo">
+          <option value="nequi">Nequi</option>
+          <option value="daviplata">Daviplata</option>
+          <option value="bancolombia">Bancolombia</option>
+          <option value="bono">Bono de supermercado</option>
+        </select></div>
+      <div class="field"><label>Número o correo de destino</label>
+        <input id="cjDestino" type="text" placeholder="3001234567"></div>
+      <div class="msg" id="cjMsg"></div>
+      <button class="btn" id="btnCanjear">Solicitar canje</button>
+    </div>
+
+    <div class="card">
+      <h2>Mis canjes</h2>
+      <div id="listaRetiros"><div class="muted">Todavía no has solicitado canjes.</div></div>
+    </div>
+  </div>
+
+  <!-- ================= PERFIL ================= -->
+  <div class="view" id="viewPerfil">
+    <h1 style="margin-bottom:14px">Mi perfil</h1>
+
+    <div class="card">
+      <h2>Información personal</h2>
+      <div class="field"><label>Nombre completo</label><input id="pfNombre" type="text"></div>
+      <div class="field"><label>Nombre de usuario</label><input id="pfUsuario" type="text" autocapitalize="none"></div>
+      <div class="field"><label>Teléfono</label><input id="pfTel" type="tel" inputmode="numeric" maxlength="10"></div>
+      <div class="field"><label>Fecha de nacimiento</label><input id="pfNac" type="date"></div>
+      <div class="field"><label>Correo (no se puede cambiar)</label><input id="pfCorreo" type="email" disabled></div>
+      <div class="msg" id="pfMsg"></div>
+      <button class="btn" id="btnGuardarPerfil">Guardar cambios</button>
+    </div>
+
+    <div class="card">
+      <h2>Cambiar contraseña</h2>
+      <div class="field"><label>Nueva contraseña</label><input id="pwNueva" type="password" placeholder="••••••••"></div>
+      <div class="field"><label>Repetir contraseña</label><input id="pwRepetir" type="password" placeholder="••••••••"></div>
+      <div class="msg" id="pwMsg"></div>
+      <button class="btn" id="btnClave">Actualizar contraseña</button>
+    </div>
+
+    <div class="card">
+      <button class="btn ghost" id="btnSalir">Cerrar sesión</button>
+      <p class="muted" style="text-align:center;margin-top:12px">RECIKLA · versión de prueba</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ================= NAV ================= -->
+<nav class="nav" id="nav" style="display:none">
+  <div class="nav-in">
+    <button data-go="viewHome" class="on"><span class="ic">🏠</span>Inicio</button>
+    <button data-go="viewMaquinas"><span class="ic">📍</span>Máquinas</button>
+    <button data-go="viewEscanear" class="fab"><span class="ic">▦</span></button>
+    <button data-go="viewCanjear"><span class="ic">💸</span>Canjear</button>
+    <button data-go="viewPerfil"><span class="ic">👤</span>Perfil</button>
+  </div>
+</nav>
+
+<!-- ================= MODALES ================= -->
+<div class="modal" id="modal">
+  <div class="sheet">
+    <div class="bar"></div>
+    <div id="modalBody"></div>
+    <button class="btn ghost" style="margin-top:14px" id="modalClose">Cerrar</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
