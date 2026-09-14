@@ -65,9 +65,17 @@ document.addEventListener('click', e => {
 /* ---------------------------------------------------------
    Conexión
    --------------------------------------------------------- */
+/* Limpia la URL: quita espacios, barras finales y cualquier ruta pegada
+   por error (ej. .../rest/v1). Supabase solo acepta el dominio. */
+function urlLimpia(v) {
+  let u = (v || '').trim().replace(/\s+/g, '').replace(/\/+$/, '');
+  try { u = new URL(u).origin; } catch (e) {}
+  return u;
+}
+
 function conectar() {
-  const url = (CFG.SUPABASE_URL || '').trim();
-  const key = (CFG.SUPABASE_ANON_KEY || '').trim();
+  const url = urlLimpia(CFG.SUPABASE_URL);
+  const key = (CFG.SUPABASE_ANON_KEY || '').trim().replace(/\s+/g, '');
   if (!window.supabase) return false;
   if (!url.startsWith('https://') || url.includes('TU-PROYECTO') || key.length < 30 || key.includes('PEGA-AQUI')) {
     return false;
@@ -282,35 +290,82 @@ function pintarMapa() {
 /* ---------------------------------------------------------
    ESCÁNER QR
    --------------------------------------------------------- */
+/* Espera a que la librería jsQR termine de cargar (puede venir de un CDN de respaldo) */
+function esperarJsQR(msMax = 6000) {
+  return new Promise(resolve => {
+    if (window.jsQR) return resolve(true);
+    const t0 = Date.now();
+    const t = setInterval(() => {
+      if (window.jsQR) { clearInterval(t); resolve(true); }
+      else if (Date.now() - t0 > msMax) { clearInterval(t); resolve(false); }
+    }, 150);
+  });
+}
+
 async function iniciarEscaner() {
   const v = $('scanVideo');
-  $('scanHint').textContent = 'Buscando código…';
+  $('scanHint').textContent = 'Abriendo cámara…';
   msg('scanMsg', '');
+
+  // 1. Cámara. Se pide la trasera; si el equipo no la tiene, se usa cualquiera.
   try {
-    scanStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } }, audio: false
-    });
+    try {
+      scanStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 } }, audio: false
+      });
+    } catch (e1) {
+      scanStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false
+      });
+    }
     v.srcObject = scanStream;
+    v.setAttribute('playsinline', '');
     await v.play();
   } catch (e) {
-    return msg('scanMsg', 'No se pudo abrir la cámara. Permite el acceso o usa el ingreso manual.', 'err');
+    $('scanHint').textContent = '';
+    return msg('scanMsg',
+      'No se pudo abrir la cámara (' + e.name + '). Revisa el permiso de cámara del navegador, '
+      + 'o usa el botón de abajo para escribir el código.', 'err');
   }
 
+  // 2. Librería del lector
+  $('scanHint').textContent = 'Buscando código…';
+  const listo = await esperarJsQR();
+  if (!listo) {
+    $('scanHint').textContent = '';
+    return msg('scanMsg', 'No se pudo cargar el lector de QR. Usa el ingreso manual del código.', 'err');
+  }
+
+  // 3. Bucle de lectura. Se reduce el cuadro a 640 px de ancho: en celular
+  //    detecta mucho más rápido y consume menos batería.
   const c = document.createElement('canvas');
   const ctx = c.getContext('2d', { willReadFrequently: true });
+  let intentos = 0;
 
   scanLoop = setInterval(() => {
-    if (v.readyState < 2 || !window.jsQR) return;
-    c.width = v.videoWidth; c.height = v.videoHeight;
+    if (!v.videoWidth || v.readyState < 2) return;
+
+    const escala = Math.min(1, 640 / v.videoWidth);
+    c.width  = Math.round(v.videoWidth  * escala);
+    c.height = Math.round(v.videoHeight * escala);
     ctx.drawImage(v, 0, 0, c.width, c.height);
+
     const img = ctx.getImageData(0, 0, c.width, c.height);
-    const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+    const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+
     if (r && r.data) {
       detenerEscaner();
-      $('scanHint').textContent = 'Código detectado';
+      $('scanHint').textContent = '✅ Código detectado';
+      $('scanWrap').style.outline = '3px solid var(--green)';
+      setTimeout(() => { $('scanWrap').style.outline = ''; }, 800);
       vincular(extraerToken(r.data));
+      return;
     }
-  }, 320);
+
+    intentos++;
+    if (intentos === 40) $('scanHint').textContent = 'Acerca más el celular al código';
+    if (intentos === 90) $('scanHint').textContent = 'Si no engancha, usa el ingreso manual';
+  }, 200);
 }
 
 function detenerEscaner() {
@@ -326,9 +381,9 @@ function extraerToken(texto) {
   } catch (e) { return texto.trim(); }
 }
 
-async function vincular(token) {
-  if (!token) return;
-  if (!USUARIO) { tokenPendiente = token; return; }
+async function vincular(token, silencioso) {
+  if (!token) return false;
+  if (!USUARIO) { tokenPendiente = token; return false; }
   try {
     const r = await rpc('vincular_token_qr', { p_token: token });
     abrirModal(`
@@ -340,22 +395,36 @@ async function vincular(token) {
         Ya puedes empezar a depositar tus envases. Los puntos se abonan al finalizar la sesión.
       </p>`);
     ir('viewHome');
+    return true;
   } catch (e) {
     msg('scanMsg', e.message, 'err');
-    toast(e.message, true);
+    if (!silencioso) toast(e.message, true);
+    return false;
   }
 }
 
 $('scanManual').onclick = () => {
   abrirModal(`
     <h2>Ingresar código</h2>
-    <p class="muted" style="margin-bottom:12px">Escribe el código que aparece debajo del QR en la máquina.</p>
-    <div class="field"><input id="codManual" type="text" placeholder="a1b2c3d4e5f6" autocapitalize="none"></div>
-    <button class="btn" id="codOk">Conectar</button>`);
-  $('codOk').onclick = () => {
-    const t = $('codManual').value.trim();
-    $('modal').classList.remove('show');
-    vincular(t);
+    <p class="muted" style="margin-bottom:12px">Escribe los 6 caracteres que aparecen debajo del QR en la máquina.</p>
+    <div class="field">
+      <input id="codManual" type="text" maxlength="10" autocapitalize="characters" autocomplete="off"
+             placeholder="A1B2C3"
+             style="text-align:center;font-size:30px;letter-spacing:8px;font-family:'Courier New',monospace;text-transform:uppercase">
+    </div>
+    <div class="msg err" id="codMsg"></div>
+    <button class="btn" id="codOk">Conectar con la máquina</button>`);
+  const inp = $('codManual');
+  setTimeout(() => inp.focus(), 150);
+  inp.addEventListener('input', () => { inp.value = inp.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') $('codOk').click(); });
+  $('codOk').onclick = async () => {
+    const t = inp.value.trim();
+    if (t.length < 4) { msg('codMsg', 'El código tiene 6 caracteres.', 'err'); return; }
+    msg('codMsg', 'Conectando…');
+    // Si todo sale bien, vincular() reemplaza el contenido del modal por la confirmación
+    const ok = await vincular(t, true);
+    if (!ok) msg('codMsg', $('scanMsg').textContent || 'No se pudo conectar.', 'err');
   };
 };
 
