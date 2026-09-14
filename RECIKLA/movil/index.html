@@ -265,8 +265,8 @@
   <div class="view" id="viewEscanear">
     <h1 style="margin-bottom:4px">Escanear máquina</h1>
     <p class="muted" style="margin-bottom:14px">Apunta al código QR que aparece en la pantalla de la máquina RECIKLA.</p>
-    <div class="scan-wrap">
-      <video id="scanVideo" playsinline muted></video>
+    <div class="scan-wrap" id="scanWrap">
+      <video id="scanVideo" playsinline autoplay muted></video>
       <div class="scan-frame"></div>
       <div class="scan-hint" id="scanHint">Buscando código…</div>
     </div>
@@ -360,7 +360,9 @@
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<!-- Lector de QR. Si el primer CDN falla, se intenta el segundo automáticamente. -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"
+        onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';document.head.appendChild(s);"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
