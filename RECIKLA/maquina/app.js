@@ -1,70 +1,65 @@
 /* =========================================================
-   RECIKLA · APP MÓVIL
-   Registro, balance, máquinas, escáner QR, canje y perfil
+   RECIKLA · MÁQUINA
+   Visión artificial (COCO-SSD + MobileNet) + Supabase
    ========================================================= */
 
 const CFG = window.RECIKLA_CONFIG;
+
+const VISION = {
+  scoreCoco: 0.45,
+  areaMinima: 0.035,
+  framesParaAceptar: 4,
+  framesParaInvalido: 5,
+  framesParaLimpiar: 6,
+  intervaloMs: 170,
+  confianzaMinima: 0.30
+};
+
+const CLASES_ENVASE = ['bottle', 'cup', 'wine glass', 'vase'];
+
+const LEXICO = {
+  vidrio:  ['beer bottle','wine bottle','whiskey jug','goblet','beer glass','vase','pitcher','water jug','measuring cup','wine','perfume','flask'],
+  plastico:['pop bottle','soda bottle','water bottle','pill bottle','lotion','sunscreen','shampoo','plastic','nipple','jug','saltshaker'],
+  lata:    ['milk can','can opener','hair spray','oil filter','cocktail shaker','beer can','tin can','pop can','bucket','pail','shaker','lighter']
+};
+
+const ETIQUETA = { plastico:'PLASTICO', vidrio:'VIDRIO', lata:'LATA' };
+const ICONO    = { plastico:'🧴', vidrio:'🍾', lata:'🥤' };
+const COLOR    = { plastico:'#38b6ff', vidrio:'#22e07a', lata:'#ffc043' };
+
 const $ = id => document.getElementById(id);
-const nf  = n => new Intl.NumberFormat('es-CO').format(Math.round(n || 0));
-const cop = n => '$' + nf((n || 0) * (CFG.PESOS_POR_PUNTO || 1)) + ' COP';
+const nf = n => new Intl.NumberFormat('es-CO').format(n || 0);
 
-let sb = null;
-let USUARIO = null;          // fila de public.usuarios
-let MAQUINAS = [];
-let mapa = null, capaMarcas = null;
-let scanStream = null, scanLoop = null;
-let tokenPendiente = null;
+/* ------------------ ESTADO ------------------ */
+const S = {
+  usuario: null,          // { id, nombre, nombre_usuario, puntos }
+  sesionId: null,
+  tokenQR: null,
+  conteo: { plastico:0, vidrio:0, lata:0 },
+  puntosSesion: 0,
+  sesionActiva: false,
+  estado: 'ESPERANDO',
+  bloqueado: false,
+  buffer: [],
+  framesVacios: 0,
+  framesInvalido: 0,
+  modelosListos: false,
+  camaraLista: false,
+  limiteAlcanzado: false
+};
 
-/* ---------------------------------------------------------
-   Utilidades de interfaz
-   --------------------------------------------------------- */
-function toast(msg, malo) {
-  const t = $('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (malo ? ' bad' : '');
-  clearTimeout(t._t);
-  t._t = setTimeout(() => { t.className = 'toast' + (malo ? ' bad' : ''); }, 4000);
-}
+let db = null;              // cliente Supabase
+let MODO_LOCAL = true;      // true = sin base de datos (demo offline)
+let cocoModel = null, mobilenetModel = null;
+let pollQR = null, timerQR = null, timerResumen = null;
 
-function msg(el, texto, tipo) {
-  const e = $(el);
-  e.textContent = texto || '';
-  e.className = 'msg' + (tipo ? ' ' + tipo : '');
-}
+const cropCanvas = document.createElement('canvas');
+cropCanvas.width = 224; cropCanvas.height = 224;
+const cropCtx = cropCanvas.getContext('2d', { willReadFrequently:true });
 
-function abrirModal(html) {
-  $('modalBody').innerHTML = html;
-  $('modal').classList.add('show');
-}
-$('modalClose').onclick = () => $('modal').classList.remove('show');
-$('modal').onclick = e => { if (e.target.id === 'modal') $('modal').classList.remove('show'); };
-
-/* ---------------------------------------------------------
-   Navegación
-   --------------------------------------------------------- */
-function ir(vista) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  $(vista).classList.add('active');
-  document.querySelectorAll('.nav button').forEach(b =>
-    b.classList.toggle('on', b.dataset.go === vista));
-  window.scrollTo(0, 0);
-
-  if (vista !== 'viewEscanear') detenerEscaner();
-  if (vista === 'viewEscanear') iniciarEscaner();
-  if (vista === 'viewMaquinas') { cargarMaquinas().then(pintarMapa); }
-  if (vista === 'viewCanjear')  { $('cjBalance').textContent = nf(USUARIO?.puntos); cargarRetiros(); }
-  if (vista === 'viewPerfil')   llenarPerfil();
-  if (vista === 'viewHome')     refrescarInicio();
-}
-
-document.addEventListener('click', e => {
-  const b = e.target.closest('[data-go]');
-  if (b) ir(b.dataset.go);
-});
-
-/* ---------------------------------------------------------
-   Conexión
-   --------------------------------------------------------- */
+/* =========================================================
+   1. CONEXIÓN A SUPABASE
+   ========================================================= */
 /* Limpia la URL: quita espacios, barras finales y cualquier ruta pegada
    por error (ej. .../rest/v1). Supabase solo acepta el dominio. */
 function urlLimpia(v) {
@@ -76,522 +71,593 @@ function urlLimpia(v) {
 function conectar() {
   const url = urlLimpia(CFG.SUPABASE_URL);
   const key = (CFG.SUPABASE_ANON_KEY || '').trim().replace(/\s+/g, '');
-  if (!window.supabase) return false;
-  if (!url.startsWith('https://') || url.includes('TU-PROYECTO') || key.length < 30 || key.includes('PEGA-AQUI')) {
-    return false;
+  const listo = url.startsWith('https://') && !url.includes('TU-PROYECTO')
+             && key.length > 30 && !key.includes('PEGA-AQUI');
+  if (!listo || !window.supabase) {
+    MODO_LOCAL = true;
+    $('badgeConn').innerHTML = 'Modo <b>demo local</b>';
+    $('badgeConn').classList.add('off');
+    return;
   }
-  sb = window.supabase.createClient(url, key);
-  return true;
+  db = window.supabase.createClient(url, key);
+  MODO_LOCAL = false;
+  $('badgeConn').innerHTML = 'Conectado a <b>Supabase</b>';
+  $('badgeConn').classList.remove('off');
 }
 
 async function rpc(nombre, args) {
-  const { data, error } = await sb.rpc(nombre, args);
+  const { data, error } = await db.rpc(nombre, args);
   if (error) throw new Error(error.message);
   return data;
 }
 
-/* ---------------------------------------------------------
-   AUTENTICACIÓN
-   --------------------------------------------------------- */
-$('tabLogin').onclick = () => {
-  $('tabLogin').classList.add('on'); $('tabReg').classList.remove('on');
-  $('formLogin').style.display = ''; $('formReg').style.display = 'none';
-};
-$('tabReg').onclick = () => {
-  $('tabReg').classList.add('on'); $('tabLogin').classList.remove('on');
-  $('formReg').style.display = ''; $('formLogin').style.display = 'none';
-};
+function toast(msg, malo) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (malo ? ' bad' : '');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = 'toast' + (malo ? ' bad' : ''), 3800);
+}
 
-$('btnLogin').onclick = async () => {
-  const email = $('lgCorreo').value.trim();
-  const pass  = $('lgClave').value;
-  if (!email || !pass) return msg('lgMsg', 'Escribe tu correo y contraseña.', 'err');
-  msg('lgMsg', 'Entrando…');
-  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
-  if (error) {
-    return msg('lgMsg', error.message.includes('Invalid')
-      ? 'Correo o contraseña incorrectos.' : error.message, 'err');
+/* =========================================================
+   2. NAVEGACIÓN
+   ========================================================= */
+function mostrar(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+function volverInicio() {
+  clearInterval(timerResumen);
+  S.usuario = null; S.sesionId = null; S.sesionActiva = false;
+  S.conteo = { plastico:0, vidrio:0, lata:0 };
+  S.puntosSesion = 0; S.limiteAlcanzado = false;
+  S.buffer = []; S.bloqueado = false;
+  $('inPhone').value = '';
+  $('phoneError').textContent = '';
+  pintarEstado('ESPERANDO', '');
+  mostrar('screenHome');
+  refrescarQR();
+  refrescarMaquina();
+}
+
+/* =========================================================
+   3. CÓDIGO QR DE INICIO RÁPIDO
+   ========================================================= */
+let qrObj = null;
+
+function baseMovil() {
+  let u = (CFG.URL_APP_MOVIL || '').trim().replace(/\s+/g, '').replace(/\/+$/, '');
+  if (u && !/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return u;
+}
+
+async function refrescarQR() {
+  clearInterval(pollQR); clearInterval(timerQR);
+  const box = $('qrbox');
+  box.innerHTML = '';
+
+  const base = baseMovil();
+  let destino = base;
+  let segundos = 180;
+
+  if (!MODO_LOCAL) {
+    try {
+      const r = await rpc('crear_token_qr', { p_maquina_codigo: CFG.CODIGO_MAQUINA });
+      S.tokenQR = r.token;
+      destino = base + '/?vincular=' + r.token;
+    } catch (e) {
+      S.tokenQR = null;
+      toast('No se pudo generar el QR: ' + e.message, true);
+    }
+  } else {
+    S.tokenQR = null;
+    destino = base + '/?demo=1';
   }
-  msg('lgMsg', '');
-  await entrar();
-};
 
-$('btnReg').onclick = async () => {
-  const nombre  = $('rgNombre').value.trim();
-  const usuario = $('rgUsuario').value.trim().toLowerCase().replace(/[^a-z0-9_.]/g, '');
-  const tel     = $('rgTel').value.replace(/\D/g, '');
-  const correo  = $('rgCorreo').value.trim();
-  const nac     = $('rgNac').value;
-  const clave   = $('rgClave').value;
-
-  if (nombre.length < 3)   return msg('rgMsg', 'Escribe tu nombre completo.', 'err');
-  if (usuario.length < 3)  return msg('rgMsg', 'El nombre de usuario debe tener al menos 3 caracteres.', 'err');
-  if (tel.length !== 10)   return msg('rgMsg', 'El teléfono debe tener 10 dígitos.', 'err');
-  if (!/^\S+@\S+\.\S+$/.test(correo)) return msg('rgMsg', 'Correo no válido.', 'err');
-  if (!nac)                return msg('rgMsg', 'Selecciona tu fecha de nacimiento.', 'err');
-  if (clave.length < 6)    return msg('rgMsg', 'La contraseña debe tener mínimo 6 caracteres.', 'err');
-
-  msg('rgMsg', 'Verificando…');
   try {
-    const d = await rpc('disponibilidad', { p_telefono: tel, p_nombre_usuario: usuario });
-    if (!d.telefono_libre) return msg('rgMsg', 'Ya existe una cuenta con ese teléfono.', 'err');
-    if (!d.usuario_libre)  return msg('rgMsg', 'Ese nombre de usuario ya está tomado.', 'err');
-  } catch (e) { /* si falla la verificación, seguimos: el índice único protege igual */ }
+    qrObj = new QRCode(box, {
+      text: destino, width: 180, height: 180,
+      colorDark: '#07130d', colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } catch (e) { box.textContent = 'QR no disponible'; }
 
-  msg('rgMsg', 'Creando tu cuenta…');
-  const { data, error } = await sb.auth.signUp({
-    email: correo, password: clave,
-    options: { data: {
-      nombre_completo: nombre, nombre_usuario: usuario,
-      telefono: tel, fecha_nacimiento: nac
-    }}
+  // Aviso si la URL de la app móvil no fue configurada
+  const avisoPrevio = document.querySelector('.qr-warn');
+  if (avisoPrevio) avisoPrevio.remove();
+  if (!base || base.includes('recikla-movil.vercel.app')) {
+    const w = document.createElement('div');
+    w.className = 'qr-warn';
+    w.textContent = '⚠ Falta poner la URL real de tu app móvil en config.js (URL_APP_MOVIL). '
+                  + 'Mientras tanto, usa el ingreso por número de teléfono.';
+    $('qrTimer').parentNode.insertBefore(w, $('qrTimer').nextSibling);
+  }
+
+  if (!S.tokenQR) { $('qrTimer').textContent = MODO_LOCAL ? 'Modo demo · el QR abre la app móvil' : ''; return; }
+
+  timerQR = setInterval(() => {
+    segundos--;
+    $('qrTimer').textContent = 'El código se renueva en ' + segundos + ' s';
+    if (segundos <= 0) refrescarQR();
+  }, 1000);
+
+  // Consulta si alguien ya lo escaneó o lo escribió en la app
+  pollQR = setInterval(async () => {
+    if (!S.tokenQR) return;
+    try {
+      const r = await rpc('estado_token_qr', { p_token: S.tokenQR });
+      if (r.estado === 'vinculado' && r.usuario_id) {
+        clearInterval(pollQR); clearInterval(timerQR);
+        S.usuario = { id:r.usuario_id, nombre:r.nombre, nombre_usuario:r.nombre_usuario, puntos:r.puntos };
+        toast('¡Hola ' + (r.nombre || '') + '! Iniciando tu sesión…');
+        iniciarSesion();
+      } else if (r.estado === 'expirado') {
+        refrescarQR();
+      }
+    } catch (e) { /* silencioso */ }
+  }, 1000);
+}
+
+/* =========================================================
+   4. INGRESO POR TELÉFONO
+   ========================================================= */
+(function armarTeclado() {
+  const k = $('keypad');
+  ['1','2','3','4','5','6','7','8','9','⌫','0','OK'].forEach(t => {
+    const b = document.createElement('button');
+    b.className = 'key' + (t === '⌫' || t === 'OK' ? ' alt' : '');
+    b.textContent = t;
+    b.onclick = () => {
+      const i = $('inPhone');
+      if (t === '⌫') i.value = i.value.slice(0, -1);
+      else if (t === 'OK') $('searchPhone').click();
+      else if (i.value.replace(/\D/g,'').length < 10) i.value += t;
+      $('phoneError').textContent = '';
+    };
+    k.appendChild(b);
   });
-  if (error) return msg('rgMsg', error.message, 'err');
+})();
 
-  if (!data.session) {
-    return msg('rgMsg', 'Cuenta creada. Revisa tu correo y confirma el registro para poder entrar.', 'ok');
+$('goPhone').onclick   = () => { clearInterval(pollQR); mostrar('screenPhone'); };
+$('backHome1').onclick = volverInicio;
+$('backHome2').onclick = volverInicio;
+
+$('searchPhone').onclick = async () => {
+  const tel = $('inPhone').value.replace(/\D/g, '');
+  if (tel.length < 7) return $('phoneError').textContent = 'Escribe un número válido (10 dígitos).';
+  $('phoneError').textContent = 'Buscando…';
+
+  if (MODO_LOCAL) {
+    S.usuario = { id:'demo-local', nombre:'Usuario de prueba', nombre_usuario:'@demo', puntos:0 };
+    return mostrarEncontrado();
   }
-  msg('rgMsg', '');
-  toast('¡Bienvenido a RECIKLA, ' + nombre.split(' ')[0] + '!');
-  await entrar();
-};
-
-$('btnSalir').onclick = async () => {
-  await sb.auth.signOut();
-  USUARIO = null;
-  $('nav').style.display = 'none';
-  ir('viewAuth');
-};
-
-async function cargarPerfil() {
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) return null;
-  const { data, error } = await sb.from('usuarios').select('*').eq('id', user.id).single();
-  if (error) {
-    // El perfil puede tardar un instante en crearse tras el registro
-    await new Promise(r => setTimeout(r, 900));
-    const reintento = await sb.from('usuarios').select('*').eq('id', user.id).single();
-    if (reintento.error) return null;
-    return { ...reintento.data, correo: reintento.data.correo || user.email };
-  }
-  return { ...data, correo: data.correo || user.email };
-}
-
-async function entrar() {
-  USUARIO = await cargarPerfil();
-  if (!USUARIO) { toast('No se pudo cargar tu perfil.', true); return; }
-  $('nav').style.display = '';
-  ir('viewHome');
-  if (tokenPendiente) { const t = tokenPendiente; tokenPendiente = null; vincular(t); }
-}
-
-/* ---------------------------------------------------------
-   INICIO
-   --------------------------------------------------------- */
-async function refrescarInicio() {
-  if (!USUARIO) return;
-  USUARIO = (await cargarPerfil()) || USUARIO;
-  $('hiName').textContent  = USUARIO.nombre_completo;
-  $('hiUser').textContent  = '@' + (USUARIO.nombre_usuario || 'usuario');
-  $('balPuntos').textContent = nf(USUARIO.puntos);
-  $('balPesos').textContent  = '≈ ' + cop(USUARIO.puntos);
-  await cargarMaquinas();
-  pintarListaMaquinas($('homeMaquinas'), MAQUINAS.slice(0, 3));
-  cargarActividad();
-}
-
-async function cargarActividad() {
   try {
-    const { data, error } = await sb.from('sesiones')
-      .select('id,iniciada_en,total_objetos,total_puntos,estado,maquinas(nombre)')
-      .order('iniciada_en', { ascending: false }).limit(5);
-    if (error || !data || !data.length) return;
-    $('homeActividad').innerHTML = data.map(s => `
-      <div class="item">
-        <div class="ic">♻️</div>
-        <div class="grow">
-          <div style="font-weight:600">${s.maquinas?.nombre || 'Máquina RECIKLA'}</div>
-          <div class="muted" style="font-size:11.5px">
-            ${new Date(s.iniciada_en).toLocaleDateString('es-CO',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
-            · ${s.total_objetos} envases
-          </div>
-        </div>
-        <div class="pz">+${nf(s.total_puntos)}</div>
-      </div>`).join('');
+    const r = await rpc('buscar_usuario_telefono', { p_telefono: tel });
+    if (!r.encontrado) {
+      return $('phoneError').textContent = 'No encontramos una cuenta con ese número. Regístrate en la app RECIKLA.';
+    }
+    S.usuario = { id:r.usuario_id, nombre:r.nombre, nombre_usuario:r.nombre_usuario, puntos:r.puntos };
+    mostrarEncontrado();
+  } catch (e) {
+    $('phoneError').textContent = 'Error de conexión: ' + e.message;
+  }
+};
+
+function mostrarEncontrado() {
+  $('phoneError').textContent = '';
+  $('foundName').textContent   = S.usuario.nombre || '—';
+  $('foundUser').textContent   = S.usuario.nombre_usuario ? '@' + String(S.usuario.nombre_usuario).replace('@','') : '';
+  $('foundPoints').textContent = nf(S.usuario.puntos);
+  mostrar('screenFound');
+}
+
+$('continueSession').onclick = () => iniciarSesion();
+
+/* =========================================================
+   5. SESIÓN DE RECICLAJE
+   ========================================================= */
+async function iniciarSesion() {
+  clearInterval(pollQR); clearInterval(timerQR);
+  S.conteo = { plastico:0, vidrio:0, lata:0 };
+  S.puntosSesion = 0; S.limiteAlcanzado = false;
+  S.buffer = []; S.bloqueado = false; S.framesVacios = 0;
+  S.sesionActiva = true;
+
+  if (!MODO_LOCAL) {
+    try {
+      const r = await rpc('iniciar_sesion_maquina', {
+        p_usuario_id: S.usuario.id,
+        p_maquina_codigo: CFG.CODIGO_MAQUINA,
+        p_token: S.tokenQR
+      });
+      S.sesionId = r.sesion_id;
+    } catch (e) {
+      toast('No se pudo abrir la sesión: ' + e.message, true);
+      S.sesionId = null;
+    }
+  } else {
+    S.sesionId = 'local';
+  }
+
+  $('chipName').textContent = S.usuario.nombre || 'Invitado';
+  $('chipUser').textContent = S.usuario.nombre_usuario ? '@' + String(S.usuario.nombre_usuario).replace('@','') : 'sin cuenta';
+  $('capMax').textContent = CFG.MAX_OBJETOS;
+  $('logBox').innerHTML = '<div class="log-empty" id="logEmpty">Aún no has ingresado objetos en esta sesión.</div>';
+  refrescarPanel();
+  pintarEstado('ESPERANDO', '');
+  mostrar('screenSession');
+}
+
+function refrescarPanel() {
+  const total = S.conteo.plastico + S.conteo.vidrio + S.conteo.lata;
+  $('cPlastico').textContent = S.conteo.plastico;
+  $('cVidrio').textContent   = S.conteo.vidrio;
+  $('cLata').textContent     = S.conteo.lata;
+  $('cTotal').textContent    = total;
+  $('moneyVal').textContent  = nf(S.puntosSesion);
+  $('capNow').textContent    = total;
+  const pct = Math.min(100, total / CFG.MAX_OBJETOS * 100);
+  const bar = $('capBar');
+  bar.style.width = pct + '%';
+  bar.classList.toggle('full', pct >= 100);
+}
+
+function agregarRegistro(tipo, puntos) {
+  const vacio = $('logEmpty');
+  if (vacio) vacio.remove();
+  const div = document.createElement('div');
+  div.className = 'log-item';
+  div.innerHTML = `<div class="ic ic-${tipo}">${ICONO[tipo]}</div>
+                   <div class="nm">${ETIQUETA[tipo]}</div>
+                   <div class="pz">+${nf(puntos)} pts</div>`;
+  $('logBox').prepend(div);
+}
+
+async function aceptarObjeto(tipo) {
+  if (!S.sesionActiva || S.bloqueado || S.limiteAlcanzado) return;
+  S.bloqueado = true;
+  S.buffer = []; S.framesVacios = 0;
+
+  let puntos = CFG.PUNTOS[tipo];
+  let limite = false;
+
+  if (!MODO_LOCAL && S.sesionId && S.sesionId !== 'local') {
+    try {
+      const r = await rpc('registrar_objeto', { p_sesion_id: S.sesionId, p_material: tipo });
+      if (r.ok === false) {
+        S.limiteAlcanzado = true;
+        pintarEstado('INVALIDO', 'Límite de ' + CFG.MAX_OBJETOS + ' envases');
+        toast('Alcanzaste el máximo de ' + CFG.MAX_OBJETOS + ' envases. Presiona FINALIZAR.', true);
+        return;
+      }
+      puntos = r.puntos;
+      S.puntosSesion = r.total_puntos;
+      limite = r.limite;
+    } catch (e) {
+      toast('No se pudo registrar el envase: ' + e.message, true);
+      S.puntosSesion += puntos;
+    }
+  } else {
+    S.puntosSesion += puntos;
+  }
+
+  S.conteo[tipo]++;
+  const total = S.conteo.plastico + S.conteo.vidrio + S.conteo.lata;
+  if (total >= CFG.MAX_OBJETOS) limite = true;
+
+  refrescarPanel();
+  agregarRegistro(tipo, puntos);
+  pintarEstado('ACEPTADO', ETIQUETA[tipo]);
+  animarMotor();
+  beep(true);
+  refrescarMaquina();
+
+  if (limite) {
+    S.limiteAlcanzado = true;
+    setTimeout(() => {
+      pintarEstado('INVALIDO', 'Límite alcanzado');
+      $('statusSub').textContent = 'Llegaste a ' + CFG.MAX_OBJETOS + ' envases. Presiona FINALIZAR.';
+      toast('Máximo de ' + CFG.MAX_OBJETOS + ' envases alcanzado. Presiona FINALIZAR.');
+    }, 1200);
+  }
+}
+
+/* ---- FINALIZAR ---- */
+$('finishBtn').onclick = async () => {
+  S.sesionActiva = false;
+  const total = S.conteo.plastico + S.conteo.vidrio + S.conteo.lata;
+  let balance = (S.usuario?.puntos || 0) + S.puntosSesion;
+
+  if (!MODO_LOCAL && S.sesionId && S.sesionId !== 'local') {
+    try {
+      const r = await rpc('finalizar_sesion', { p_sesion_id: S.sesionId });
+      balance = r.balance;
+      S.puntosSesion = r.total_puntos;
+    } catch (e) {
+      toast('No se pudieron abonar los puntos: ' + e.message, true);
+    }
+  }
+
+  $('sumName').textContent     = S.usuario?.nombre || 'Invitado';
+  $('sumUser').textContent     = S.usuario?.nombre_usuario ? '@' + String(S.usuario.nombre_usuario).replace('@','') : '—';
+  $('sumPlastico').textContent = S.conteo.plastico;
+  $('sumVidrio').textContent   = S.conteo.vidrio;
+  $('sumLata').textContent     = S.conteo.lata;
+  $('sumTotal').textContent    = total;
+  $('sumGain').textContent     = nf(S.puntosSesion) + ' pts';
+  $('sumBalance').textContent  = nf(balance) + ' pts';
+  $('sumDate').textContent     = new Date().toLocaleString('es-CO');
+  mostrar('screenSummary');
+
+  let s = CFG.SEGUNDOS_RESUMEN;
+  $('countdown').textContent = 'Volviendo al inicio en ' + s + ' s';
+  clearInterval(timerResumen);
+  timerResumen = setInterval(() => {
+    s--;
+    $('countdown').textContent = 'Volviendo al inicio en ' + s + ' s';
+    if (s <= 0) volverInicio();
+  }, 1000);
+};
+
+$('newSession').onclick = volverInicio;
+
+/* ---- Estado de la máquina (nivel de llenado) ---- */
+async function refrescarMaquina() {
+  $('badgeMaquina').innerHTML = 'Máquina <b>' + CFG.CODIGO_MAQUINA + '</b>';
+  if (MODO_LOCAL) { $('badgeLlenado').innerHTML = 'Llenado <b>demo</b>'; return; }
+  try {
+    const { data, error } = await db.from('maquinas')
+      .select('objetos_actuales,capacidad_max,estado')
+      .eq('codigo', CFG.CODIGO_MAQUINA).single();
+    if (error || !data) return;
+    const pct = Math.round(data.objetos_actuales / data.capacidad_max * 100);
+    $('badgeLlenado').innerHTML = 'Llenado <b>' + pct + '%</b>';
+  } catch (e) { /* silencioso */ }
+}
+
+/* =========================================================
+   6. VISIÓN ARTIFICIAL
+   ========================================================= */
+function pintarEstado(estado, detalle) {
+  S.estado = estado;
+  const clase = estado === 'ACEPTADO' ? 'st-ok' : estado === 'INVALIDO' ? 'st-bad' : 'st-wait';
+
+  const cam = $('camStatus');
+  cam.className = 'cam-status ' + clase;
+  cam.firstChild.textContent = estado + ' ';
+  $('camSub').textContent = detalle || '';
+
+  const box = $('statusBox');
+  if (box) {
+    box.className = 'status-box ' + clase;
+    $('statusVal').textContent = estado;
+    $('statusSub').textContent =
+      estado === 'ACEPTADO' ? (detalle || '') + ' — ingresado por el motor'
+      : estado === 'INVALIDO' ? 'Este material no se recibe. Retíralo.'
+      : 'Acerca un objeto al lector';
+  }
+}
+
+function animarMotor() {
+  const m = $('motor');
+  m.classList.add('on');
+  setTimeout(() => m.classList.remove('on'), 520);
+}
+
+function beep(ok) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine'; o.frequency.value = ok ? 880 : 220;
+    g.gain.setValueAtTime(0.001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+    o.start(); o.stop(ctx.currentTime + 0.3);
   } catch (e) {}
 }
 
-/* ---------------------------------------------------------
-   MÁQUINAS
-   --------------------------------------------------------- */
-function nivel(m) {
-  return Math.min(100, Math.round(m.objetos_actuales / Math.max(1, m.capacidad_max) * 100));
-}
-function colorNivel(p) { return p >= 90 ? '#ff4d5e' : p >= 65 ? '#ffc043' : '#22e07a'; }
+const video = $('video');
+const overlay = $('overlay');
+const octx = overlay.getContext('2d');
 
-async function cargarMaquinas() {
+async function iniciarCamara() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width:{ideal:1280}, height:{ideal:720}, facingMode:'user' }, audio:false
+  });
+  video.srcObject = stream;
+  await new Promise(res => { if (video.readyState >= 2) return res(); video.onloadedmetadata = () => res(); });
+  await video.play();
+  S.camaraLista = true;
+}
+
+async function cargarModelos() {
+  $('camModel').textContent = 'Cargando modelos…';
+  const [coco, mob] = await Promise.all([
+    cocoSsd.load({ base:'lite_mobilenet_v2' }),
+    mobilenet.load({ version:2, alpha:1.0 })
+  ]);
+  cocoModel = coco; mobilenetModel = mob;
+  S.modelosListos = true;
+  $('camModel').textContent = 'COCO-SSD + MobileNet v2';
+}
+
+function ajustarOverlay() {
+  const r = $('stage').getBoundingClientRect();
+  overlay.width = r.width; overlay.height = r.height;
+}
+window.addEventListener('resize', ajustarOverlay);
+
+function mapear(x, y, w, h) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cw = overlay.width, ch = overlay.height;
+  const esc = Math.min(cw / vw, ch / vh);
+  const offX = (cw - vw * esc) / 2, offY = (ch - vh * esc) / 2;
+  return { x: offX + (vw - (x + w)) * esc, y: offY + y * esc, w: w * esc, h: h * esc };
+}
+
+function analizarColor() {
+  const d = cropCtx.getImageData(0, 0, 224, 224).data;
+  let sumV = 0, sumS = 0, brillantes = 0, verdes = 0, ambar = 0, n = 0;
+  for (let i = 0; i < d.length; i += 16) {
+    const r = d[i]/255, g = d[i+1]/255, b = d[i+2]/255;
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    const v = max, s = max === 0 ? 0 : (max - min)/max;
+    sumV += v; sumS += s; n++;
+    if (v > 0.92 && s < 0.25) brillantes++;
+    if (max - min > 0.06) {
+      let hue;
+      if (max === r) hue = 60 * (((g-b)/(max-min)) % 6);
+      else if (max === g) hue = 60 * ((b-r)/(max-min) + 2);
+      else hue = 60 * ((r-g)/(max-min) + 4);
+      if (hue < 0) hue += 360;
+      if (hue >= 70 && hue <= 175) verdes++;
+      if (hue >= 15 && hue <= 48 && v < 0.7) ambar++;
+    }
+  }
+  return { v:sumV/n, s:sumS/n, brillo:brillantes/n, verde:verdes/n, ambar:ambar/n };
+}
+
+function decidirMaterial(preds, ar, col) {
+  const p = { plastico:0, vidrio:0, lata:0 };
+  preds.forEach(pr => {
+    const nombre = pr.className.toLowerCase();
+    for (const mat in LEXICO) {
+      if (LEXICO[mat].some(w => nombre.includes(w))) p[mat] += pr.probability * 1.1;
+    }
+  });
+  if (ar > 0 && ar < 2.00) p.lata += 0.38;
+  else if (ar < 2.35) { p.lata += 0.10; p.plastico += 0.10; p.vidrio += 0.06; }
+  else { p.plastico += 0.20; p.vidrio += 0.16; }
+
+  if (col.brillo > 0.05 && col.s < 0.35) p.lata += 0.26;
+  if (col.s > 0.48 && ar < 2.15)         p.lata += 0.18;
+  if (col.verde > 0.22 && col.v < 0.62)  p.vidrio += 0.26;
+  if (col.ambar > 0.20 && col.v < 0.60)  p.vidrio += 0.22;
+  if (col.v > 0.62 && col.s < 0.22 && ar > 2.2) p.plastico += 0.18;
+
+  const mejor = Object.keys(p).reduce((a,b) => p[a] > p[b] ? a : b);
+  return { tipo: mejor, conf: p[mejor] };
+}
+
+const TRAD = {
+  person:'persona','cell phone':'celular',book:'libro',laptop:'portátil',banana:'banano',
+  apple:'manzana',orange:'naranja',mouse:'mouse',keyboard:'teclado',remote:'control',
+  scissors:'tijeras',chair:'silla',backpack:'mochila','teddy bear':'peluche',clock:'reloj',
+  spoon:'cuchara',fork:'tenedor',knife:'cuchillo',bowl:'plato'
+};
+const traducir = c => TRAD[c] || c;
+
+function dibujarCaja(x, y, w, h, texto, color) {
+  const m = mapear(x, y, w, h);
+  octx.lineWidth = 3; octx.strokeStyle = color;
+  octx.shadowColor = color; octx.shadowBlur = 12;
+  octx.strokeRect(m.x, m.y, m.w, m.h);
+  octx.shadowBlur = 0;
+  octx.font = '700 18px Segoe UI, system-ui, sans-serif';
+  const tw = octx.measureText(texto).width;
+  octx.fillStyle = color;
+  octx.fillRect(m.x, Math.max(0, m.y - 28), tw + 18, 26);
+  octx.fillStyle = '#06170e';
+  octx.fillText(texto, m.x + 9, Math.max(18, m.y - 9));
+}
+
+async function bucle() {
+  if (!S.modelosListos || !S.camaraLista || video.readyState < 2) return setTimeout(bucle, 200);
   try {
-    const { data, error } = await sb.from('maquinas').select('*').order('nombre');
-    if (!error && data) MAQUINAS = data;
-  } catch (e) {}
-  pintarListaMaquinas($('listaMaquinas'), MAQUINAS);
-  return MAQUINAS;
+    if (overlay.width === 0) ajustarOverlay();
+    const dets = await cocoModel.detect(video, 8, VISION.scoreCoco);
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+
+    const areaCuadro = video.videoWidth * video.videoHeight;
+    let envase = null, ajeno = null;
+
+    for (const d of dets) {
+      const [x, y, w, h] = d.bbox;
+      if ((w * h) / areaCuadro < VISION.areaMinima) continue;
+      if (CLASES_ENVASE.includes(d.class)) {
+        if (!envase || w*h > envase.bbox[2]*envase.bbox[3]) envase = d;
+      } else if (d.score > 0.55) {
+        if (!ajeno || w*h > ajeno.bbox[2]*ajeno.bbox[3]) ajeno = d;
+      }
+    }
+
+    if (envase) {
+      S.framesVacios = 0; S.framesInvalido = 0;
+      const [x, y, w, h] = envase.bbox;
+      cropCtx.drawImage(video, x, y, w, h, 0, 0, 224, 224);
+      const preds = await mobilenetModel.classify(cropCanvas, 5);
+      const res = decidirMaterial(preds, h / w, analizarColor());
+      const tipo = res.conf >= VISION.confianzaMinima ? res.tipo : 'plastico';
+      dibujarCaja(x, y, w, h, ETIQUETA[tipo], COLOR[tipo]);
+
+      if (!S.bloqueado && !S.limiteAlcanzado) {
+        S.buffer.push(tipo);
+        if (S.buffer.length > VISION.framesParaAceptar) S.buffer.shift();
+        const estable = S.buffer.length >= VISION.framesParaAceptar && S.buffer.every(t => t === S.buffer[0]);
+        if (estable && S.sesionActiva) await aceptarObjeto(S.buffer[0]);
+        else if (S.estado !== 'ACEPTADO') pintarEstado('ESPERANDO', 'Analizando ' + ETIQUETA[tipo] + '…');
+      }
+    } else if (ajeno) {
+      S.framesVacios = 0; S.buffer = [];
+      S.framesInvalido++;
+      const [x, y, w, h] = ajeno.bbox;
+      dibujarCaja(x, y, w, h, 'INVALIDO', '#ff4d5e');
+      if (S.framesInvalido >= VISION.framesParaInvalido && !S.bloqueado && !S.limiteAlcanzado) {
+        if (S.estado !== 'INVALIDO') beep(false);
+        pintarEstado('INVALIDO', traducir(ajeno.class));
+      }
+    } else {
+      S.framesInvalido = 0; S.buffer = [];
+      S.framesVacios++;
+      if (S.framesVacios >= VISION.framesParaLimpiar) {
+        S.bloqueado = false;
+        if (S.estado !== 'ESPERANDO' && !S.limiteAlcanzado) pintarEstado('ESPERANDO', '');
+      }
+    }
+  } catch (e) { console.error('[RECIKLA]', e); }
+  setTimeout(bucle, VISION.intervaloMs);
 }
 
-function pintarListaMaquinas(cont, lista) {
-  if (!cont) return;
-  if (!lista.length) { cont.innerHTML = '<div class="muted">No hay máquinas registradas todavía.</div>'; return; }
-  cont.innerHTML = lista.map(m => {
-    const p = nivel(m), c = colorNivel(p);
-    const estado = m.estado !== 'activa' ? 'Fuera de servicio'
-                 : p >= 90 ? 'Casi llena' : p >= 65 ? 'Disponible · llenándose' : 'Disponible';
-    const clase  = m.estado !== 'activa' || p >= 90 ? 'st-full' : p >= 65 ? 'st-med' : 'st-ok';
-    return `<div class="maq">
-      <div class="ring" style="background:conic-gradient(${c} ${p*3.6}deg, rgba(255,255,255,.08) 0deg)">
-        <i>${p}%</i>
-      </div>
-      <div class="grow">
-        <div class="nm">${m.nombre}</div>
-        <div class="ad">${m.direccion || ''}${m.ciudad ? ' · ' + m.ciudad : ''}</div>
-        <div class="st ${clase}">● ${estado} · ${m.codigo}</div>
-      </div>
-    </div>`;
-  }).join('');
-}
+/* ---- Atajos de respaldo: 1 lata · 2 plástico · 3 vidrio ---- */
+document.addEventListener('keydown', e => {
+  if (!CFG.ATAJOS_ACTIVOS || !S.sesionActiva) return;
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  const mapa = { '1':'lata', '2':'plastico', '3':'vidrio' };
+  const tipo = mapa[e.key];
+  if (!tipo) return;
+  S.bloqueado = false;
+  aceptarObjeto(tipo);
+});
 
-function pintarMapa() {
-  const conPos = MAQUINAS.filter(m => m.lat && m.lng);
-  if (!window.L || !conPos.length) {
-    $('mapa').innerHTML = '<div class="muted" style="display:grid;place-items:center;height:100%;text-align:center;padding:20px">'
-      + (window.L ? 'Las máquinas aún no tienen ubicación registrada.' : 'No se pudo cargar el mapa. Revisa tu conexión.')
-      + '</div>';
+/* =========================================================
+   7. ARRANQUE
+   ========================================================= */
+(async function main() {
+  conectar();
+  refrescarMaquina();
+  ajustarOverlay();
+  pintarEstado('ESPERANDO', '');
+  refrescarQR();
+
+  try {
+    await iniciarCamara();
+  } catch (e) {
+    $('loader').innerHTML = `<div><p><b>No se pudo abrir la cámara</b>
+      Permite el acceso a la cámara y recarga la página. Solo funciona en https:// o localhost.
+      <br><br><span style="opacity:.6">${e.name}: ${e.message}</span></p></div>`;
     return;
   }
-  if (!mapa) {
-    mapa = L.map('mapa', { zoomControl: false, attributionControl: false });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mapa);
-    capaMarcas = L.layerGroup().addTo(mapa);
-  }
-  capaMarcas.clearLayers();
-  conPos.forEach(m => {
-    const p = nivel(m);
-    const icon = L.divIcon({
-      className: '', iconSize: [26, 26],
-      html: `<div class="mk" style="background:${colorNivel(p)}">${p}</div>`
-    });
-    L.marker([m.lat, m.lng], { icon })
-      .bindPopup(`<b>${m.nombre}</b><br>${m.direccion || ''}<br>Llenado: ${p}%`)
-      .addTo(capaMarcas);
-  });
-  mapa.fitBounds(conPos.map(m => [m.lat, m.lng]), { padding: [30, 30] });
-  setTimeout(() => mapa.invalidateSize(), 250);
-}
+  ajustarOverlay();
+  $('loader').classList.add('hidden');
 
-/* ---------------------------------------------------------
-   ESCÁNER QR
-   --------------------------------------------------------- */
-/* Espera a que la librería jsQR termine de cargar (puede venir de un CDN de respaldo) */
-function esperarJsQR(msMax = 6000) {
-  return new Promise(resolve => {
-    if (window.jsQR) return resolve(true);
-    const t0 = Date.now();
-    const t = setInterval(() => {
-      if (window.jsQR) { clearInterval(t); resolve(true); }
-      else if (Date.now() - t0 > msMax) { clearInterval(t); resolve(false); }
-    }, 150);
-  });
-}
-
-async function iniciarEscaner() {
-  const v = $('scanVideo');
-  $('scanHint').textContent = 'Abriendo cámara…';
-  msg('scanMsg', '');
-
-  // 1. Cámara. Se pide la trasera; si el equipo no la tiene, se usa cualquiera.
   try {
-    try {
-      scanStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 } }, audio: false
-      });
-    } catch (e1) {
-      scanStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false
-      });
-    }
-    v.srcObject = scanStream;
-    v.setAttribute('playsinline', '');
-    await v.play();
+    await cargarModelos();
+    bucle();
   } catch (e) {
-    $('scanHint').textContent = '';
-    return msg('scanMsg',
-      'No se pudo abrir la cámara (' + e.name + '). Revisa el permiso de cámara del navegador, '
-      + 'o usa el botón de abajo para escribir el código.', 'err');
-  }
-
-  // 2. Librería del lector
-  $('scanHint').textContent = 'Buscando código…';
-  const listo = await esperarJsQR();
-  if (!listo) {
-    $('scanHint').textContent = '';
-    return msg('scanMsg', 'No se pudo cargar el lector de QR. Usa el ingreso manual del código.', 'err');
-  }
-
-  // 3. Bucle de lectura. Se reduce el cuadro a 640 px de ancho: en celular
-  //    detecta mucho más rápido y consume menos batería.
-  const c = document.createElement('canvas');
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  let intentos = 0;
-
-  scanLoop = setInterval(() => {
-    if (!v.videoWidth || v.readyState < 2) return;
-
-    const escala = Math.min(1, 640 / v.videoWidth);
-    c.width  = Math.round(v.videoWidth  * escala);
-    c.height = Math.round(v.videoHeight * escala);
-    ctx.drawImage(v, 0, 0, c.width, c.height);
-
-    const img = ctx.getImageData(0, 0, c.width, c.height);
-    const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
-
-    if (r && r.data) {
-      detenerEscaner();
-      $('scanHint').textContent = '✅ Código detectado';
-      $('scanWrap').style.outline = '3px solid var(--green)';
-      setTimeout(() => { $('scanWrap').style.outline = ''; }, 800);
-      vincular(extraerToken(r.data));
-      return;
-    }
-
-    intentos++;
-    if (intentos === 40) $('scanHint').textContent = 'Acerca más el celular al código';
-    if (intentos === 90) $('scanHint').textContent = 'Si no engancha, usa el ingreso manual';
-  }, 200);
-}
-
-function detenerEscaner() {
-  clearInterval(scanLoop); scanLoop = null;
-  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
-  const v = $('scanVideo'); if (v) v.srcObject = null;
-}
-
-function extraerToken(texto) {
-  try {
-    const u = new URL(texto);
-    return u.searchParams.get('vincular') || texto;
-  } catch (e) { return texto.trim(); }
-}
-
-async function vincular(token, silencioso) {
-  if (!token) return false;
-  if (!USUARIO) { tokenPendiente = token; return false; }
-  try {
-    const r = await rpc('vincular_token_qr', { p_token: token });
-    abrirModal(`
-      <h2 style="text-align:center">✅ Conectado</h2>
-      <p class="muted" style="text-align:center;margin:10px 0 4px">
-        Tu cuenta quedó vinculada con<br><b style="color:var(--text)">${r.maquina}</b>
-      </p>
-      <p class="muted" style="text-align:center">
-        Ya puedes empezar a depositar tus envases. Los puntos se abonan al finalizar la sesión.
-      </p>`);
-    ir('viewHome');
-    return true;
-  } catch (e) {
-    msg('scanMsg', e.message, 'err');
-    if (!silencioso) toast(e.message, true);
-    return false;
-  }
-}
-
-$('scanManual').onclick = () => {
-  abrirModal(`
-    <h2>Ingresar código</h2>
-    <p class="muted" style="margin-bottom:12px">Escribe los 6 caracteres que aparecen debajo del QR en la máquina.</p>
-    <div class="field">
-      <input id="codManual" type="text" maxlength="10" autocapitalize="characters" autocomplete="off"
-             placeholder="A1B2C3"
-             style="text-align:center;font-size:30px;letter-spacing:8px;font-family:'Courier New',monospace;text-transform:uppercase">
-    </div>
-    <div class="msg err" id="codMsg"></div>
-    <button class="btn" id="codOk">Conectar con la máquina</button>`);
-  const inp = $('codManual');
-  setTimeout(() => inp.focus(), 150);
-  inp.addEventListener('input', () => { inp.value = inp.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') $('codOk').click(); });
-  $('codOk').onclick = async () => {
-    const t = inp.value.trim();
-    if (t.length < 4) { msg('codMsg', 'El código tiene 6 caracteres.', 'err'); return; }
-    msg('codMsg', 'Conectando…');
-    // Si todo sale bien, vincular() reemplaza el contenido del modal por la confirmación
-    const ok = await vincular(t, true);
-    if (!ok) msg('codMsg', $('scanMsg').textContent || 'No se pudo conectar.', 'err');
-  };
-};
-
-/* ---------------------------------------------------------
-   CANJE DE PUNTOS
-   --------------------------------------------------------- */
-$('btnCanjear').onclick = async () => {
-  const puntos  = parseInt($('cjPuntos').value, 10);
-  const metodo  = $('cjMetodo').value;
-  const destino = $('cjDestino').value.trim();
-  const min = CFG.CANJE_MINIMO || 2000;
-
-  if (!puntos || puntos < min) return msg('cjMsg', 'El mínimo es ' + nf(min) + ' puntos.', 'err');
-  if (puntos > (USUARIO?.puntos || 0)) return msg('cjMsg', 'No tienes puntos suficientes.', 'err');
-  if (destino.length < 5) return msg('cjMsg', 'Escribe el número o correo de destino.', 'err');
-
-  msg('cjMsg', 'Enviando solicitud…');
-  try {
-    const r = await rpc('solicitar_retiro', { p_puntos: puntos, p_metodo: metodo, p_destino: destino });
-    USUARIO.puntos = r.balance;
-    $('cjBalance').textContent = nf(r.balance);
-    $('cjPuntos').value = '';
-    msg('cjMsg', 'Solicitud registrada. Se procesa en 1 a 3 días hábiles.', 'ok');
-    toast('Canje solicitado por ' + cop(puntos));
-    cargarRetiros();
-  } catch (e) { msg('cjMsg', e.message, 'err'); }
-};
-
-async function cargarRetiros() {
-  try {
-    const { data, error } = await sb.from('retiros').select('*')
-      .order('solicitado_en', { ascending: false }).limit(10);
-    if (error || !data || !data.length) return;
-    $('listaRetiros').innerHTML = data.map(r => `
-      <div class="item">
-        <div class="ic">💸</div>
-        <div class="grow">
-          <div style="font-weight:600;text-transform:capitalize">${r.metodo}</div>
-          <div class="muted" style="font-size:11.5px">
-            ${new Date(r.solicitado_en).toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'})}
-            · ${r.estado}
-          </div>
-        </div>
-        <div class="pz neg">-${nf(r.puntos)}</div>
-      </div>`).join('');
-  } catch (e) {}
-}
-
-/* ---------------------------------------------------------
-   PERFIL
-   --------------------------------------------------------- */
-function llenarPerfil() {
-  if (!USUARIO) return;
-  $('pfNombre').value  = USUARIO.nombre_completo || '';
-  $('pfUsuario').value = USUARIO.nombre_usuario || '';
-  $('pfTel').value     = USUARIO.telefono || '';
-  $('pfNac').value     = USUARIO.fecha_nacimiento || '';
-  $('pfCorreo').value  = USUARIO.correo || '';
-  msg('pfMsg', ''); msg('pwMsg', '');
-}
-
-$('btnGuardarPerfil').onclick = async () => {
-  const nombre  = $('pfNombre').value.trim();
-  const usuario = $('pfUsuario').value.trim().toLowerCase().replace(/[^a-z0-9_.]/g, '');
-  const tel     = $('pfTel').value.replace(/\D/g, '');
-  const nac     = $('pfNac').value || null;
-
-  if (nombre.length < 3)  return msg('pfMsg', 'Nombre demasiado corto.', 'err');
-  if (usuario.length < 3) return msg('pfMsg', 'Nombre de usuario demasiado corto.', 'err');
-  if (tel.length !== 10)  return msg('pfMsg', 'El teléfono debe tener 10 dígitos.', 'err');
-
-  msg('pfMsg', 'Guardando…');
-  const { error } = await sb.from('usuarios').update({
-    nombre_completo: nombre, nombre_usuario: usuario, telefono: tel, fecha_nacimiento: nac
-  }).eq('id', USUARIO.id);
-
-  if (error) {
-    return msg('pfMsg', error.message.includes('usuarios_telefono_key')
-      ? 'Ese teléfono ya está registrado en otra cuenta.'
-      : error.message.includes('usuarios_nombre_usuario_key')
-      ? 'Ese nombre de usuario ya está tomado.' : error.message, 'err');
-  }
-  Object.assign(USUARIO, { nombre_completo: nombre, nombre_usuario: usuario, telefono: tel, fecha_nacimiento: nac });
-  msg('pfMsg', 'Datos actualizados.', 'ok');
-  toast('Perfil actualizado');
-};
-
-$('btnClave').onclick = async () => {
-  const a = $('pwNueva').value, b = $('pwRepetir').value;
-  if (a.length < 6)  return msg('pwMsg', 'La contraseña debe tener mínimo 6 caracteres.', 'err');
-  if (a !== b)       return msg('pwMsg', 'Las contraseñas no coinciden.', 'err');
-  msg('pwMsg', 'Actualizando…');
-  const { error } = await sb.auth.updateUser({ password: a });
-  if (error) return msg('pwMsg', error.message, 'err');
-  $('pwNueva').value = ''; $('pwRepetir').value = '';
-  msg('pwMsg', 'Contraseña actualizada.', 'ok');
-  toast('Contraseña actualizada');
-};
-
-/* ---------------------------------------------------------
-   SOPORTE E INSTRUCCIONES
-   --------------------------------------------------------- */
-const HTML_INSTRUCCIONES = `
-  <h2>Cómo reciclar en RECIKLA</h2>
-  <div class="step"><div class="n">1</div><p><b>Busca una máquina.</b> En la pestaña Máquinas ves cuáles están cerca y qué tan llenas están.</p></div>
-  <div class="step"><div class="n">2</div><p><b>Inicia sesión en la máquina.</b> Escanea el QR de la pantalla desde el botón central de la app, o escribe tu número de teléfono en la máquina.</p></div>
-  <div class="step"><div class="n">3</div><p><b>Deposita los envases uno por uno.</b> La cámara identifica si es plástico, vidrio o lata. Máximo 20 envases por sesión.</p></div>
-  <div class="step"><div class="n">4</div><p><b>Presiona FINALIZAR.</b> Los puntos se abonan a tu cuenta de inmediato.</p></div>
-  <div class="step"><div class="n">5</div><p><b>Canjea.</b> Desde 2.000 puntos puedes pasarlos a Nequi, Daviplata o un bono.</p></div>
-  <div class="card" style="margin-top:6px">
-    <h2>Cuánto vale cada envase</h2>
-    <div class="item"><div class="ic">🧴</div><div class="grow">Botella plástica (PET)</div><div class="pz">100 pts</div></div>
-    <div class="item"><div class="ic">🍾</div><div class="grow">Botella de vidrio</div><div class="pz">200 pts</div></div>
-    <div class="item"><div class="ic">🥤</div><div class="grow">Lata de aluminio</div><div class="pz">300 pts</div></div>
-  </div>`;
-
-const HTML_SOPORTE = `
-  <h2>Soporte RECIKLA</h2>
-  <p class="muted" style="margin-bottom:14px">¿Algo no funcionó? Escríbenos y lo resolvemos.</p>
-  <div class="item"><div class="ic">📱</div><div class="grow">WhatsApp<br><span class="muted">Lun a sáb, 8am – 6pm</span></div><div class="pz">300 000 0000</div></div>
-  <div class="item"><div class="ic">✉️</div><div class="grow">Correo</div><div class="pz">soporte@recikla.co</div></div>
-  <div class="card" style="margin-top:12px">
-    <h2>Preguntas frecuentes</h2>
-    <p class="muted" style="margin-bottom:10px"><b style="color:var(--text)">La máquina no aceptó mi envase.</b><br>
-      Solo se reciben botellas plásticas, de vidrio y latas. Deben estar vacías y sin aplastar.</p>
-    <p class="muted" style="margin-bottom:10px"><b style="color:var(--text)">No veo mis puntos.</b><br>
-      Los puntos se abonan al presionar FINALIZAR en la máquina. Desliza hacia abajo en Inicio para actualizar.</p>
-    <p class="muted"><b style="color:var(--text)">¿Cuánto tarda un canje?</b><br>
-      Entre 1 y 3 días hábiles según el método elegido.</p>
-  </div>`;
-
-$('qInstr').onclick  = () => abrirModal(HTML_INSTRUCCIONES);
-$('qInstr2').onclick = () => abrirModal(HTML_INSTRUCCIONES);
-$('qSoporte').onclick = () => abrirModal(HTML_SOPORTE);
-
-/* ---------------------------------------------------------
-   ARRANQUE
-   --------------------------------------------------------- */
-(async function main() {
-  $('minCanje').textContent = nf(CFG.CANJE_MINIMO || 2000);
-
-  // token que viene en la URL (?vincular=xxxx) al abrir el QR desde la cámara del celular
-  const params = new URLSearchParams(location.search);
-  if (params.get('vincular')) {
-    tokenPendiente = params.get('vincular');
-    history.replaceState({}, '', location.pathname);
-  }
-
-  if (!conectar()) {
-    $('splash').classList.add('hide');
-    ir('viewAuth');
-    return abrirModal(`
-      <h2>Falta configurar Supabase</h2>
-      <p class="muted" style="margin-top:10px">Abre el archivo <b>config.js</b> de esta app y pega tu
-      <b>Project URL</b> y tu <b>anon key</b> de Supabase. Encuentras el paso a paso en
-      <b>GUIA-SUPABASE.md</b>.</p>`);
-  }
-
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) { await entrar(); } else { ir('viewAuth'); }
-  $('splash').classList.add('hide');
-
-  sb.auth.onAuthStateChange((evento) => {
-    if (evento === 'SIGNED_OUT') { USUARIO = null; $('nav').style.display = 'none'; ir('viewAuth'); }
-  });
-
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    console.error('[RECIKLA] modelos:', e);
+    $('camModel').textContent = 'Modo manual (modelos no disponibles)';
+    pintarEstado('ESPERANDO', 'Detección automática no disponible');
   }
 })();
