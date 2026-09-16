@@ -163,13 +163,13 @@ async function refrescarQR() {
     });
   } catch (e) { box.textContent = 'QR no disponible'; }
 
-  // Aviso si la URL de la app móvil no fue configurada
+  // Aviso solo si la URL está vacía o no es una dirección web válida
   const avisoPrevio = document.querySelector('.qr-warn');
   if (avisoPrevio) avisoPrevio.remove();
-  if (!base || base.includes('recikla-movil.vercel.app')) {
+  if (!/^https:\/\/[^\/\s]+\.[^\/\s]+/.test(base)) {
     const w = document.createElement('div');
     w.className = 'qr-warn';
-    w.textContent = '⚠ Falta poner la URL real de tu app móvil en config.js (URL_APP_MOVIL). '
+    w.textContent = '⚠ Falta poner la URL de tu app móvil en config.js (URL_APP_MOVIL). '
                   + 'Mientras tanto, usa el ingreso por número de teléfono.';
     $('qrTimer').parentNode.insertBefore(w, $('qrTimer').nextSibling);
   }
